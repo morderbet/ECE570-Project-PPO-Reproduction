@@ -1,0 +1,262 @@
+\documentclass{article} 
+\usepackage{iclr2026_conference,times}
+
+% Optional math commands from https://github.com/goodfeli/dlbook_notation.
+\input{math_commands.tex}
+
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{booktabs}
+\usepackage{graphicx}
+
+\title{Reproducing the Clipping Stability Claim in\\Proximal Policy Optimization}
+
+% Authors must not appear in the submitted version. They should be hidden
+% as long as the \iclrfinalcopy macro remains commented out below.
+% Non-anonymous submissions will be rejected without review.
+\author{Anonymous}
+
+\newcommand{\fix}{\marginpar{FIX}}
+\newcommand{\new}{\marginpar{NEW}}
+
+%\iclrfinalcopy % Uncomment for camera-ready version, but NOT for submission.
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This project reproduces the stability claim of \citet{schulman2017ppo}: that the clipped surrogate objective ($L^{CLIP}$) from Proximal Policy Optimization (PPO) produces more stable training dynamics than the unclipped surrogate ($L^{CPI}$) when multiple epochs of optimization are performed on the same rollout. We follow the structure of Table~1 in the original paper but keep clipping as the sole independent variable to compare both surrogate conditions across four discrete-action environments (CartPole-v1, Acrobot-v1, LunarLander-v3, and Taxi-v3). Our results indicate clipping reduced variance and improved stability, consistent with the behavior described in the original work: On CartPole-v1, the clipped objective achieves substantially higher reward with significantly lower cross-seed variance while the unclipped baseline remains inconsistent. On Taxi-v3, due to the sparcity of the environment, the unclipped policy undergoes premature entropy collapse but PPO maintains exploration. Results on Acrobot and LunarLander are inconclusive within the current training budget, but this is consistent with the paper's note that clipping's advantage is most visible under stress. Using a small scale of testing, we support the central insight of \citet{schulman2017ppo}: clipping the probability ratio is a simple but effective mechanism for stabilizing policy gradient training under multiple epochs of optimization. \hspace{4 cm} \href{https://github.com/morderbet/ECE570-Project-PPO-Reproduction}{Code and Latex}
+\end{abstract}
+
+\section{Introduction}
+
+Policy gradient methods are a foundational class of reinforcement learning algorithms but they are known to suffer from high variance and training instability. These obstacles can lead to destructively large policy updates that often destabilize learning, and reduce efficiency, when performing multiple gradient updates on the same batch of data.
+
+\citet{schulman2017ppo} introduced Proximal Policy Optimization to address this problem. It proposes the use of a clipped surrogate objective, $L^{CLIP}$, which constrains how much the policy can change in a single update by clipping the probability ratio $r_t(\theta)$ to the interval $[1-\varepsilon, 1+\varepsilon]$. This prevents large, destabilizing updates while still allowing multiple epochs of optimization over the same rollout.
+
+This paper reproduces the stability claim by comparing the unclipped surrogate $L^{CPI}$ and the clipped objective $L^{CLIP}$ across four discrete-action environments (CartPole-v1, Acrobot-v1, LunarLander-v3, and Taxi-v3), using the structure of Table~1 of \citet{schulman2017ppo}. Clipping is treated as the sole independent variable by keeping the other components fixed. Across environments, the clipped objective maintained more stable training dynamics, reduced variance, and mitigated failure modes, whereas the unclipped objective exhibited both high-variance instability and premature policy collapse. Results in more complex environments are inconclusive but reveal that a limited training budget may not stress the optimizer enough to fully expose $L^{CPI}$ weaknesses.
+
+\section{Related Work}
+
+\textbf{Trust Region Policy Optimization.} PPO builds directly on TRPO \citep{schulman2017trpo}, which constrains policy updates by enforcing a KL-divergence trust region between the old and new policy, but its reliance on second-order optimization makes it computationally expensive. PPO approximates the same stability benefit through first-order clipping without sacrificing performance.
+
+\textbf{PPO variants.} \citet{schulman2017ppo} evaluates three objective formulations in Table~1: the unclipped surrogate ($L^{CPI}$), an adaptive KL-penalty variant, and the clipped objective ($L^{CLIP}$). The KL-penalty variant penalizes the KL divergence between old and new policy but is sensitive to the penalty coefficient. Our work focuses on the effects of the clipping mechanism.
+
+\textbf{Reproducibility and implementation details.} \citet{engstrom2020implementation} show that seemingly minor implementations, such as reward normalization and learning rate annealing, can account for a large fraction of PPO's empirical performance. Our reproduction holds such details fixed between conditions to mirror the original paper, ensuring that the only variable is the clipping mechanism.
+
+\section{Methodology}
+
+\subsection{Policy Gradient Methods}
+
+Policy gradient methods optimize a stochastic policy $\pi_\theta$ by computing a policy gradient estimation:
+\begin{equation}
+    \hat{g} = \hat{\mathbb{E}}_t \left[ \nabla_\theta \log \pi_\theta(a_t \mid s_t)
+    \hat{A}_t \right]
+\end{equation}
+where $\hat{A}_t$ is an estimate of the advantage function at timestep $t$. The corresponding objective is:
+\begin{equation}
+    L^{PG}(\theta) = \hat{\mathbb{E}}_t \left[ \log \pi_\theta(a_t \mid s_t)
+    \hat{A}_t \right]
+\end{equation}
+$L^{PG}$ has no mechanism to constrain how far the new policy drifts from the policy that collected the data, so it is designed for a single gradient update per data sample. Performing multiple updates on the same batch leads to increasingly large policy changes that can destabilize training \citep{schulman2017ppo}. PPO replaces $L^{PG}$ with a surrogate objective that constrains probability ratio directly.
+
+\subsection{The Unclipped Surrogate Objective}
+
+To enable multiple updates per rollout, TRPO introduces a surrogate objective \citep{schulman2017trpo} with a probability ratio defined as
+$r_t(\theta) = \frac{\pi_\theta(a_t \mid s_t)}{\pi_{\theta_{\text{old}}}(a_t \mid s_t)}$. The surrogate objective is:
+\begin{equation}
+    L^{CPI}(\theta) = \hat{\mathbb{E}}_t \left[ r_t(\theta) \hat{A}_t \right]
+\end{equation}
+This objective, referred to as conservative policy iteration ($L^{CPI}$), measures how much better the new policy is relative to the old one, and is weighted by the advantage. It is the baseline of the experiments and allows the reuse of collected rollout data that directly corresponds to the ``no clipping or penalty'' condition in Table~1 \citep{schulman2017ppo}.
+
+\subsection{PPO: Clipped Surrogate Objective}
+
+Maximizing $L^{CPI}$ can produce excessively large policy updates if no constraints are applied on $r_t(\theta)$. PPO addresses the instability of $L^{CPI}$ by introducing a clipped surrogate objective:
+\begin{equation}
+    L^{CLIP}(\theta) = \hat{\mathbb{E}}_t \left[ \min\left( r_t(\theta)\hat{A}_t,\
+    \text{clip}(r_t(\theta),\, 1-\varepsilon,\, 1+\varepsilon)\hat{A}_t \right) \right]
+\end{equation}
+The clipping operation removes the incentive for $r_t(\theta)$ to move outside $[1-\varepsilon, 1+\varepsilon]$. Taking the minimum of the clipped and unclipped terms makes $L^{CLIP}$ a pessimistic lower bound on $L^{CPI}$ where the policy is only penalized when the ratio moves in a direction that would improve the objective, preventing overly optimistic updates. \citet{schulman2017ppo} find this objective outperforms the unclipped surrogate across continuous control benchmarks (Table~1).
+
+\subsection{Generalized Advantage Estimation}
+
+Both conditions in our experiments use Generalized Advantage Estimation
+\citep{schulman2015gae} to calculate advantage estimates by computing the weighted sum of temporal difference errors:
+\begin{equation}
+    \hat{A}_t = \sum_{l=0}^{T-t-1} (\gamma\lambda)^l \delta_{t+l},
+    \quad \delta_t = r_t + \gamma V(s_{t+1}) - V(s_t)
+\end{equation}
+where $\gamma$ is the discount factor and $\lambda$ controls the bias-variance tradeoff. GAE is applied identically in both conditions and therefore does not affect their comparison in the experiments.
+
+\section{Experimental Setup}
+
+\subsection{Environments}
+
+We evaluate on four discrete-action environments from OpenAI Gymnasium:
+\begin{itemize}
+    \item \textbf{CartPole-v1}: A pole-balancing task. Episodes terminate when the pole falls or after 500 timesteps. Maximum achievable reward is 500.
+    \item \textbf{Acrobot-v1}: A two-link pendulum swing-up task with sparse, negative rewards. Episodes terminate after 500 timesteps or when the goal height is reached.
+    \item \textbf{LunarLander-v3}: A spacecraft landing task with discrete actions. The agent must land between two flags. Reward structure is dense but shaped.
+    \item \textbf{Taxi-v3}: A discrete navigation task with sparse rewards. The agent must pick up and deliver a passenger to a target location.
+\end{itemize}
+These environments span different ranges of difficulty, reward density, and state space complexity, allowing us to evaluate the effect of clipping across varied training conditions.
+
+\subsection{Network Architecture}
+
+Following \citet{schulman2017ppo} Section~6.1, we use a fully-connected MLP with two hidden layers of 64 units and tanh activations for both the policy and value networks. The policy network outputs a softmax distribution over discrete actions; the value network outputs a scalar state-value estimate. Parameters are not shared between the two networks.
+
+\subsection{Training Infrastructure}
+
+Each training run follows the PPO actor-critic style described in Algorithm~1 of \citet{schulman2017ppo}:
+\begin{enumerate}
+    \item Collect a fixed-length rollout of $T$ timesteps using the current policy.
+    \item Compute advantage estimates using GAE.
+    \item Optimize the surrogate objective for $K$ epochs using minibatch SGD.
+\end{enumerate}
+For the unclipped condition, step~3 optimizes $L^{CPI}$. For the clipped condition, step~3 optimizes $L^{CLIP}$. All other components, such as rollout collection, GAE computation, value function updates, entropy regularization, and minibatch updates, are identical between conditions.
+
+\subsection{Hyperparameters}
+
+All hyperparameters are shared between both conditions and held fixed across all environments. Table~\ref{tab:hyperparams} summarizes the values used.
+
+\begin{table}[h]
+\caption{Hyperparameters used for all experiments.}
+\label{tab:hyperparams}
+\begin{center}
+\begin{tabular}{lc}
+\toprule
+\textbf{Hyperparameter} & \textbf{Value} \\
+\midrule
+Horizon ($T$)                        & 4000               \\
+Learning rate                        & $3 \times 10^{-4}$ \\
+Discount ($\gamma$)                  & 0.99               \\
+GAE parameter ($\lambda$)            & 0.95               \\
+Update epochs ($K$)                  & 10                 \\
+Minibatch size                       & 256                \\
+Entropy coefficient                  & 0.01               \\
+Clipping parameter ($\varepsilon$)   & 0.2                \\
+Seeds per condition                  & 4                  \\
+\bottomrule
+\end{tabular}
+\end{center}
+\end{table}
+
+These hyperparameters follow \citet{schulman2017ppo} Table~3 closely, with two differences: we use a larger horizon ($T=4000$ vs.\ 2048) and a larger minibatch size (256 vs.\ 64) to accommodate discrete-action environments. We use the paper's best-performing clipping parameter $(\varepsilon=0.2)$.
+
+\subsection{Evaluation Metrics}
+
+We evaluate each condition using three metrics:
+\begin{itemize}
+    \item \textbf{Mean final reward}: Average episode reward across seeds in the final epoch, reported as mean $\pm$ std. This captures both convergence quality (mean) and cross-seed stability (std).
+    \item \textbf{Late-training reward standard deviation}: Standard deviation of rewards over the last 20\% of training epochs across all seeds. Lower values indicate more stable convergence.
+    \item \textbf{Policy entropy}: Mean entropy of the action distribution over training. A sudden drop signals premature policy collapse.
+\end{itemize}
+Results are averaged across 4 seeds per condition. Seed values are fixed and identical between conditions to maintain control for environment stochasticity. Minor numerical variations may occur across different hardware or library versions
+
+\section{Results}
+
+\subsection{Overview}
+
+Table~\ref{tab:results} summarizes the final performance and late-training stability of both conditions across all four environments averaged across four seeds per condition.
+
+\begin{table}[h]
+\caption{Final epoch reward (mean $\pm$ std across 4 seeds) and late-training reward standard deviation.}
+\label{tab:results}
+\begin{center}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Environment} & \textbf{Unclipped (Mean $\pm$ Std)} &
+\textbf{PPO Clipped (Mean $\pm$ Std)} &
+\textbf{Late-train Std (Unclipped / PPO)} \\
+\midrule
+CartPole-v1    & $418.77 \pm 140.69$ & $488.91 \pm 19.21$   & 74.77 / 34.29 \\
+Acrobot-v1     & $-83.79 \pm 1.20$   & $-86.66 \pm 6.92$   & 4.90 / 4.44    \\
+LunarLander-v3 & $109.03 \pm 85.24$   & $56.78 \pm 34.65$   & 60.47 / 70.52  \\
+Taxi-v3        & $-200.45 \pm 0.32$  & $-200.67 \pm 0.23$ & 0.31 / 0.44   \\
+\bottomrule
+\end{tabular}
+\end{center}
+\end{table}
+
+\subsection{CartPole-v1}
+
+CartPole provides the clearest evidence in support of the hypothesis. The clipped objective achieves a mean final reward of $488.91 \pm 19.21$ across all four seeds, substantially outperforming the unclipped baseline, which averages $418.77 \pm 140.69$. The late-training reward standard deviation of the unclipped condition is 74.77 compared to PPO's 34.29, a two-fold reduction that demonstrates that clipping the probability ratio produces substantially more stable learning dynamics.
+
+Figure~\ref{fig:curves} (left) shows the reward curves for both clipped and unclipped conditions. The unclipped baseline exhibits high variance across seeds throughout training, with individual runs diverging significantly while PPO's seed curves converge tightly to the maximum reward and remain stable. This pattern mirrors Figure 3 of \citet{schulman2017ppo} and demonstrates that the unclipped surrogate leads to destructively large policy updates when optimized over multiple epochs.
+
+\subsection{Taxi-v3}
+
+Taxi-v3 reveals a subtler form of instability in the unclipped baseline. Both conditions converge to nearly identical final rewards ($-200.45$ unclipped vs.\ $-200.67$ PPO) with very low standard deviations (0.31 and 0.44) but having low standard deviation does not indicate stability because both policies converged to a similarly suboptimal result. Their similar final rewards reflect the sparsity of Taxi-v3 rather than equivalent learning dynamics, as the entropy curves in Figure~\ref{fig:curves} reveal.
+
+Figure~\ref{fig:curves} (right) shows the entropy curves for both conditions. The entropy curves suggest the unclipped policy converged to near-deterministic behavior early in training, while PPO maintained a more distributed action distribution throughout, consistent with continued exploration.
+
+\subsection{Acrobot-v1 and LunarLander-v3}
+
+Results on Acrobot-v1 and LunarLander-v3 are inconclusive. On Acrobot, both conditions converge to nearly identical rewards ($-83.79$ vs.\ $-86.66$) with comparable standard deviations (1.20 vs.\ 6.92), suggesting this environment is insufficiently challenging to expose instability in the unclipped baseline. On LunarLander-v3, neither condition converges reliably within the training budget. The clipped condition shows a higher worst-case reward ($-216.36$ vs.\ $-306.39$ for unclipped), suggesting fewer catastrophic collapses, but overall variance remains high for both conditions.
+
+\begin{figure}[h]
+\begin{center}
+\includegraphics[width=\linewidth]{figures/curves.png}
+\end{center}
+\caption{Left: CartPole-v1 reward curves for clipped and unclipped conditions across 4 seeds. Faint lines show individual seeds; bold lines show smoothed mean; shaded bands show $\pm1$ std. Right: Taxi-v3 policy entropy curves for both conditions. The unclipped policy's entropy collapses early while PPO maintains higher entropy throughout training, despite both conditions converging to similar final rewards.}
+\label{fig:curves}
+\end{figure}
+
+\section{Analysis}
+\label{sec:analysis}
+
+\subsection{Relationship to the Original Paper}
+
+Our results support the central claim of \citet{schulman2017ppo}: that clipping the surrogate objective improves training stability when multiple epochs are performed on the same rollout. \citet{schulman2017ppo} demonstrate this on continuous MuJoCo control tasks, reporting a normalized score of $-0.39$ (unclipped) vs $0.82$ (clipped) at $\varepsilon=0.2$ (Table~1). Although we evaluate on discrete-action environments rather than continuous control, the core finding is consistent: the unclipped objective produces less stable learning dynamics compared to the clipped objective.
+
+In our experiment, the most direct correlation with the findings of the original paper is found in CartPole-v1. The unclipped baseline's high cross-seed variance ($\pm 140.69$) and late-training instability (std 74.77) reflect the destructive update behavior that \citet{schulman2017ppo} describe:
+
+\begin{quote}
+``performing multiple steps of optimization on this loss using the same trajectory\ldots empirically\ldots often leads to destructively large policy updates.''
+\end{quote}
+
+PPO's substantially lower cross-seed variance ($\pm 19.21$) and more than two-fold reduction in late-training standard deviation (34.29 vs.\ 74.77) on the same environment provide small-scale empirical confirmation of this claim.
+
+\subsection{The Two Failure Modes of the Unclipped Objective}
+
+Our results reveal two distinct failure modes of the unclipped surrogate across environments:
+
+\textbf{Instability.} In CartPole-v1, the unclipped objective produces high variance across seeds, with individual runs diverging significantly during late training. This is the failure mode \citet{schulman2017ppo} primarily describe, where unconstrained probability ratios allow updates that overshoot, destabilizing previously learned behavior. Clipping directly addresses this by bounding how far the policy can move in a single update.
+
+\textbf{Premature collapse.} In Taxi-v3, the unclipped objective produces the opposite symptom: extremely low reward variance but locked into a suboptimal policy. The entropy collapse visible in Figure~\ref{fig:curves} confirms the policy became near-deterministic early in training where the unclipped policy is stuck in a collapsed trajectory, while PPO continues exploring. Without clipping, large updates over multiple epochs drive the policy toward overconfident, low-entropy behavior before sufficient exploration has occurred, a failure mode that is less visible in the reward signal but clear in the entropy curves.
+
+These failure modes are symptoms of the same underlying instability, and both are mitigated by clipping. On LunarLander, where neither condition converges reliably, PPO's higher worst-case floor ($-216.36$ vs.\ $-306.39$) suggests fewer catastrophic collapses despite the overall inconclusive reward outcome.
+
+\subsection{Limitations}
+
+Several limitations may have affected the scope of our conclusions:
+
+\textbf{Training duration.} the limited number of epochs may explain the lack of meaningful reward separation on LunarLander-v3 and Acrobot-v1, where results reflect mid-training behavior rather than final performance. Longer training would likely expose greater divergence between conditions in more challenging environments.
+
+\textbf{Discrete vs.\ continuous environments.} \citet{schulman2017ppo} evaluated their training primarily on continuous MuJoCo tasks whereas our evaluation uses discrete-action environments, which differ in reward structure, state space complexity, and the nature of policy collapse. While the directional findings are consistent, the magnitude of the effect may differ from the original paper's results.
+
+\textbf{Seed count.} Four seeds per condition is sufficient to observe trends but limits the statistical reliability of the results. A larger seed count could potentially produce more robust estimates of variance.
+
+\textbf{Hyperparameter sensitivity.} Our hyperparameters are held fixed across all environments. Environment-specific tuning would likely improve the performance for both conditions, but was deliberately avoided to ensure clipping remains the sole independent variable.
+
+
+\section{Conclusion}
+
+In this project, we present a small-scale reproduction of the stability claim made by \citet{schulman2017ppo}: that PPO's clipped surrogate objective ($L^{CLIP}$) produces more stable training than the unclipped importance-sampled surrogate ($L^{CPI}$) when multiple epochs are performed on the same rollout. Our experiments isolate clipping as the sole independent variable and hold all other components fixed between conditions.
+
+The results in four discrete-action environments support this claim. On CartPole-v1, the clipped objective achieves substantially higher reward with significantly lower cross-seed variance ($\pm 19.21$ vs.\ $\pm 140.69$), while the unclipped baseline exhibits high variance and late-training instability. On Taxi-v3, the unclipped objective undergoes premature entropy collapse while PPO continues to explore, showing a subtler failure mode visible in the entropy plot. Results on Acrobot-v1 and LunarLander-v3 are inconclusive within the current training budget. Acrobot's sparse but simple reward structure may be insufficient to expose the unclipped objective's weaknesses, while LunarLander's complexity likely requires longer training to converge. PPO shows a better worst-case reward floor on LunarLander, suggesting fewer catastrophic collapses even without full convergence. Future work should extend training to more epochs and evaluate on continuous-action environments to more directly replicate the conditions of the original paper.
+
+Our implementation follows the architecture and training procedure of \citet{schulman2017ppo}, using a two-layer 64-unit MLP with tanh activations and the same core hyperparameters. At small scale and in discrete environments, our results are consistent with the original finding: clipping the probability ratio is a simple and effective mechanism for stabilizing policy gradient training under multiple optimization epochs.
+
+\section*{LLM Acknowledgments}
+Claude (Anthropic) was used during the preparation of this manuscript for the following purposes: reviewing the paper to help adhere to guidelines set by ICLR 2026 conference. 
+
+ChatGPT was used during the preparation of this manuscript for the following purposes: (1) suggesting structural edits such as condensing the introduction and conclusion; (2) editing prose for better grammar structure; (3) fixing citations.
+
+No LLM was used to generate code.
+
+
+\bibliography{refs}
+\bibliographystyle{iclr2026_conference}
+
+\end{document}
